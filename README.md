@@ -1,3 +1,29 @@
+# Conados git básicos
+
+
+git remote add origin https://github.com/marcosbras/campanha_do_agasalho.git
+git branch -M main
+git push -u origin main
+
+
+echo "# campanha_do_agasalho" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/marcosbras/campanha_do_agasalho.git
+git push -u origin main
+
+
+# Verifica qual git remoto está apontando 
+git remote -v
+
+# Remove apontamento remoto
+git remote remove origin
+
+
+
+
 # Campanha do Agasalho
 
 Exemplo didático de cadastro de doadores com Node.js, Express, SQLite, HTML, CSS, Bootstrap e Docker.
