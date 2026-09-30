@@ -1,0 +1,16 @@
+services:
+  campanha-agasalho:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORTA: 3000
+      CAMINHO_BANCO: /data/doadores.sqlite
+      ADMINISTRADOR_INICIAL: ${ADMINISTRADOR_INICIAL:?Defina ADMINISTRADOR_INICIAL no arquivo .env}
+      SENHA_INICIAL: ${SENHA_INICIAL:?Defina SENHA_INICIAL no arquivo .env}
+    volumes:
+      - dados_doadores:/data
+    restart: unless-stopped
+
+volumes:
+  dados_doadores:
