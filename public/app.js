@@ -4,8 +4,24 @@ const estadoVazio = document.querySelector('#estado-vazio');
 const campoBusca = document.querySelector('#busca-doadores');
 const formularioAdministrador = document.querySelector('#formulario-administrador');
 const listaAdministradores = document.querySelector('#lista-administradores');
-const modalAgradecimento = new bootstrap.Modal(document.querySelector('#modal-agradecimento'));
-const modalEntrar = new bootstrap.Modal(document.querySelector('#modal-entrar'));
+const formularioEntrar = document.querySelector('#formulario-entrar');
+const modalAgradecimento = document.querySelector('#modal-agradecimento') ? new bootstrap.Modal(document.querySelector('#modal-agradecimento')) : null;
+const modalEntrar = document.querySelector('#modal-entrar') ? new bootstrap.Modal(document.querySelector('#modal-entrar')) : null;
+
+function restaurarFocoAoFechar(modal, fallback) {
+  let elementoAnterior;
+  modal.addEventListener('show.bs.modal', (evento) => {
+    elementoAnterior = evento.relatedTarget || document.activeElement;
+  });
+  modal.addEventListener('hide.bs.modal', () => {
+    if (!modal.contains(document.activeElement)) return;
+    const alvo = elementoAnterior?.isConnected && !modal.contains(elementoAnterior) ? elementoAnterior : fallback;
+    alvo.focus({ preventScroll: true });
+  });
+}
+
+restaurarFocoAoFechar(document.querySelector('#modal-agradecimento'), document.querySelector('#botao-enviar'));
+restaurarFocoAoFechar(document.querySelector('#modal-entrar'), document.querySelector('#botao-entrar'));
 // Guardamos os IDs em edição para decidir entre criar um registro e atualizá-lo.
 let idDoadorEmEdicao = null;
 let idAdministradorEmEdicao = null;
@@ -30,15 +46,22 @@ function escaparHtml(valor = '') {
 
 async function chamarApi(url, opcoes = {}) {
   // Centraliza fetch, JSON e mensagens de erro para as demais funções ficarem menores.
-  const resposta = await fetch(url, {
-    ...opcoes,
-    headers: { ...(opcoes.body ? { 'Content-Type': 'application/json' } : {}), ...opcoes.headers }
-  });
-  if (!resposta.ok) {
-    const resultado = await resposta.json().catch(() => ({}));
-    throw new Error(resultado.erro || 'Não foi possível concluir a solicitação.');
+  try {
+    const resposta = await fetch(url, {
+      ...opcoes,
+      headers: { ...(opcoes.body ? { 'Content-Type': 'application/json' } : {}), ...opcoes.headers }
+    });
+    if (!resposta.ok) {
+      const resultado = await resposta.json().catch(() => ({}));
+      throw new Error(resultado.erro || 'Não foi possível concluir a solicitação.');
+    }
+    return resposta.status === 204 ? null : resposta.json();
+  } catch (erro) {
+    if (erro instanceof TypeError || erro.message === 'Failed to fetch') {
+      throw new Error('Não foi possível conectar ao servidor. Verifique a conexão e tente novamente.');
+    }
+    throw erro;
   }
-  return resposta.status === 204 ? null : resposta.json();
 }
 
 function formatarData(valor) {
@@ -74,7 +97,7 @@ async function carregarDoadores(busca = '') {
 
 function redefinirFormularioDoador() {
   idDoadorEmEdicao = null;
-  formularioDoador.reset();
+  if (formularioDoador && typeof formularioDoador.reset === 'function') formularioDoador.reset();
   limparAviso(document.querySelector('#aviso-formulario'));
   document.querySelector('#titulo-formulario').textContent = 'Quero doar';
   document.querySelector('#botao-enviar span').textContent = 'Quero fazer parte';
@@ -192,8 +215,10 @@ async function carregarAdministradores() {
 function redefinirFormularioAdministrador() {
   // Ao voltar para "adicionar", a senha volta a ser obrigatória.
   idAdministradorEmEdicao = null;
-  formularioAdministrador.reset();
-  formularioAdministrador.elements.namedItem('senha').required = true;
+  if (formularioAdministrador && typeof formularioAdministrador.reset === 'function') formularioAdministrador.reset();
+  if (formularioAdministrador && formularioAdministrador.elements.namedItem('senha')) {
+    formularioAdministrador.elements.namedItem('senha').required = true;
+  }
   document.querySelector('#titulo-formulario-administrador').textContent = 'Adicionar administrador';
   document.querySelector('#botao-salvar-administrador').textContent = 'Adicionar administrador';
   document.querySelector('#dica-senha').textContent = '(mínimo 8 caracteres)';
@@ -245,21 +270,34 @@ listaAdministradores.addEventListener('click', async (evento) => {
   }
 });
 
-document.querySelector('#formulario-entrar').addEventListener('submit', async (evento) => {
-  // O navegador guarda o cookie HttpOnly recebido do servidor para as próximas chamadas.
-  evento.preventDefault();
-  const aviso = document.querySelector('#aviso-entrar');
-  limparAviso(aviso);
-  try {
-    const conta = Object.fromEntries(new FormData(evento.currentTarget).entries());
-    const resultado = await chamarApi('/api/entrar', { method: 'POST', body: JSON.stringify(conta) });
-    modalEntrar.hide();
-    evento.currentTarget.reset();
-    mostrarPainel(resultado.usuario);
-  } catch (erro) {
-    mostrarAviso(aviso, erro.message);
-  }
-});
+if (formularioEntrar) {
+  formularioEntrar.addEventListener('submit', async (evento) => {
+    // O navegador guarda o cookie HttpOnly recebido do servidor para as próximas chamadas.
+    evento.preventDefault();
+    const aviso = document.querySelector('#aviso-entrar');
+    limparAviso(aviso);
+    const botaoEntrar = evento.currentTarget.querySelector('button[type="submit"]');
+    if (botaoEntrar) {
+      botaoEntrar.disabled = true;
+      botaoEntrar.textContent = 'Entrando...';
+    }
+    try {
+      const conta = Object.fromEntries(new FormData(evento.currentTarget).entries());
+      const resultado = await chamarApi('/api/entrar', { method: 'POST', body: JSON.stringify(conta) });
+      if (evento.currentTarget && typeof evento.currentTarget.reset === 'function') evento.currentTarget.reset();
+      mostrarPainel(resultado.usuario);
+      document.querySelector('#botao-sair').focus({ preventScroll: true });
+      if (modalEntrar) modalEntrar.hide();
+    } catch (erro) {
+      mostrarAviso(aviso, erro.message || 'Não foi possível entrar. Tente novamente.');
+    } finally {
+      if (botaoEntrar) {
+        botaoEntrar.disabled = false;
+        botaoEntrar.textContent = 'Entrar';
+      }
+    }
+  });
+}
 
 document.querySelector('#botao-sair').addEventListener('click', async () => {
   await chamarApi('/api/sair', { method: 'POST' });

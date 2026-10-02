@@ -2,7 +2,7 @@
   "name": "campanha-do-agasalho",
   "version": "1.0.0",
   "private": true,
-  "description": "Cadastro de doadores para uma campanha de agasalhos com Node.js, Express e SQLite.",
+  "description": "Cadastro de doadores para uma campanha de agasalhos com Node.js, Express e PostgreSQL/SQLite.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "pg": "^8.12.0"
   }
 }

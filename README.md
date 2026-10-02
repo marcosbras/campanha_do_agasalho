@@ -15,7 +15,7 @@ git remote add origin https://github.com/marcosbras/campanha_do_agasalho.git
 git push -u origin main
 
 
-# Verifica qual git remoto está apontando 
+# Verifica para qual git remoto está apontando 
 git remote -v
 
 # Remove apontamento remoto
@@ -110,7 +110,7 @@ O banco fica no volume Docker `dados_doadores`, então os dados continuam lá de
 docker compose down --volumes
 ```
 
-O arquivo `.env` é usado pelo Docker Compose para configurar a conta inicial. No modo local, o Node.js não lê esse arquivo automaticamente; defina as variáveis diretamente no PowerShell, como mostrado na seção anterior.
+O arquivo `.env` configura a conta inicial tanto no Docker Compose quanto na execução local. No modo local, as variáveis já definidas no ambiente do PowerShell têm prioridade sobre os valores do arquivo.
 
 ## API
 

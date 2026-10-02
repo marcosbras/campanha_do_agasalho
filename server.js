@@ -3,47 +3,177 @@ const caminho = require('node:path');
 const fs = require('node:fs');
 const criptografia = require('node:crypto');
 const express = require('express');
+const { Pool } = require('pg');
 const BancoSQLite = require('better-sqlite3');
+
+const arquivoEnv = caminho.join(__dirname, '.env');
+if (fs.existsSync(arquivoEnv)) process.loadEnvFile(arquivoEnv);
 
 const aplicativo = express();
 const porta = Number(process.env.PORTA) || 3000;
 const caminhoBanco = process.env.CAMINHO_BANCO || caminho.join(__dirname, 'data', 'doadores.sqlite');
-// As sessões ficam na memória neste exemplo e expiram quando o servidor reinicia.
+const usoPostgres = Boolean(process.env.DATABASE_URL);
 const sessoes = new Map();
 
-// Cria a pasta do banco se ainda não existir e abre o arquivo SQLite.
-fs.mkdirSync(caminho.dirname(caminhoBanco), { recursive: true });
-const banco = new BancoSQLite(caminhoBanco);
-// WAL permite que leituras e gravações ocorram melhor quando há acessos simultâneos.
-banco.pragma('journal_mode = WAL');
-// Cada tabela guarda um tipo de informação. IF NOT EXISTS preserva os dados ao reiniciar.
-banco.exec(`
-  CREATE TABLE IF NOT EXISTS doadores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    email TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    telefone TEXT NOT NULL,
-    cidade TEXT NOT NULL,
-    tamanho TEXT NOT NULL,
-    observacao TEXT NOT NULL DEFAULT '',
-    criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS administradores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    senha_hash TEXT NOT NULL,
-    criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+function converterParametrosParaPostgres(sqlOriginal, parametros) {
+  let sql = sqlOriginal.replace(/\s+COLLATE\s+NOCASE/gi, '');
+  if (Array.isArray(parametros)) {
+    if (parametros.length === 0) return { sql, params: undefined };
+    let indice = 0;
+    sql = sql.replace(/\?/g, () => `$${++indice}`);
+    return { sql, params: parametros };
+  }
+  if (parametros && typeof parametros === 'object') {
+    const chaves = Object.keys(parametros);
+    if (chaves.length === 0) return { sql, params: undefined };
+    for (const chave of chaves) {
+      sql = sql.replace(new RegExp(`@${chave}\\b`, 'g'), `$${chave}`);
+    }
+    return { sql, params: parametros };
+  }
+  return { sql, params: undefined };
+}
 
-// Copia os cadastros de uma versão anterior em inglês, sem duplicar os já importados.
-const tabelaAntigaExiste = banco.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'donors'").get();
-if (tabelaAntigaExiste) {
+function criarBancoPostgres() {
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.VERCEL ? { rejectUnauthorized: false } : false
+  });
+
+  const preparar = (sql) => ({
+    get: async (parametros) => {
+      const { sql: sqlPg, params } = converterParametrosParaPostgres(sql, parametros);
+      const resultado = params === undefined ? await pool.query(sqlPg) : await pool.query(sqlPg, params);
+      return resultado.rows[0] ?? undefined;
+    },
+    all: async (parametros) => {
+      const { sql: sqlPg, params } = converterParametrosParaPostgres(sql, parametros);
+      const resultado = params === undefined ? await pool.query(sqlPg) : await pool.query(sqlPg, params);
+      return resultado.rows;
+    },
+    run: async (...argumentos) => {
+      const parametros = argumentos.length <= 1 ? (argumentos[0] ?? []) : argumentos;
+      const { sql: sqlPg, params } = converterParametrosParaPostgres(sql, parametros);
+      const consultaFinal = /^\s*INSERT\b/i.test(sqlPg) ? `${sqlPg.trim()} RETURNING id` : sqlPg;
+      const resultado = params === undefined ? await pool.query(consultaFinal) : await pool.query(consultaFinal, params);
+      return {
+        changes: Number(resultado.rowCount || 0),
+        lastInsertRowid: resultado.rows?.[0]?.id ?? null
+      };
+    }
+  });
+
+  const executa = async (sql) => pool.query(sql);
+  return { type: 'postgres', pool, prepare: preparar, exec: executa };
+}
+
+function criarBancoSqlite() {
+  fs.mkdirSync(caminho.dirname(caminhoBanco), { recursive: true });
+  const banco = new BancoSQLite(caminhoBanco);
+  banco.pragma('journal_mode = WAL');
   banco.exec(`
-    INSERT OR IGNORE INTO doadores (id, nome, email, telefone, cidade, tamanho, observacao, criado_em, atualizado_em)
-    SELECT id, name, email, phone, city, clothing_size, message, created_at, updated_at FROM donors;
+    CREATE TABLE IF NOT EXISTS doadores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      telefone TEXT NOT NULL,
+      cidade TEXT NOT NULL,
+      tamanho TEXT NOT NULL,
+      observacao TEXT NOT NULL DEFAULT '',
+      criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS administradores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      senha_hash TEXT NOT NULL,
+      criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
+
+  const tabelaAntigaExiste = banco.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'donors'").get();
+  if (tabelaAntigaExiste) {
+    banco.exec(`
+      INSERT OR IGNORE INTO doadores (id, nome, email, telefone, cidade, tamanho, observacao, criado_em, atualizado_em)
+      SELECT id, name, email, phone, city, clothing_size, message, created_at, updated_at FROM donors;
+    `);
+  }
+
+  return {
+    type: 'sqlite',
+    prepare: (sql) => {
+      const declaracao = banco.prepare(sql);
+      return {
+        get: (parametros) => {
+          if (parametros === undefined || (Array.isArray(parametros) && parametros.length === 0) || (parametros && typeof parametros === 'object' && Object.keys(parametros).length === 0)) {
+            return declaracao.get();
+          }
+          return declaracao.get(parametros);
+        },
+        all: (parametros) => {
+          if (parametros === undefined || (Array.isArray(parametros) && parametros.length === 0) || (parametros && typeof parametros === 'object' && Object.keys(parametros).length === 0)) {
+            return declaracao.all();
+          }
+          return declaracao.all(parametros);
+        },
+        run: (...argumentos) => {
+          const resultado = argumentos.length === 0 ? declaracao.run() : declaracao.run(...argumentos);
+          return {
+            changes: resultado.changes,
+            lastInsertRowid: resultado.lastInsertRowid
+          };
+        }
+      };
+    },
+    exec: (sql) => banco.exec(sql)
+  };
+}
+
+const banco = usoPostgres ? criarBancoPostgres() : criarBancoSqlite();
+
+async function inicializarBanco() {
+  if (usoPostgres) {
+    await banco.exec(`
+      CREATE TABLE IF NOT EXISTS doadores (
+        id SERIAL PRIMARY KEY,
+        nome TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        telefone TEXT NOT NULL,
+        cidade TEXT NOT NULL,
+        tamanho TEXT NOT NULL,
+        observacao TEXT NOT NULL DEFAULT '',
+        criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS administradores (
+        id SERIAL PRIMARY KEY,
+        usuario TEXT NOT NULL UNIQUE,
+        senha_hash TEXT NOT NULL,
+        criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+  }
+
+  const totalAdministradores = usoPostgres
+    ? (await banco.prepare('SELECT COUNT(*) AS quantidade FROM administradores').get()).quantidade
+    : banco.prepare('SELECT COUNT(*) AS quantidade FROM administradores').get().quantidade;
+
+  if (totalAdministradores === 0) {
+    const usuario = process.env.ADMINISTRADOR_INICIAL;
+    const senha = process.env.SENHA_INICIAL;
+    if (!usuario || !senha) {
+      throw new Error('Defina ADMINISTRADOR_INICIAL e SENHA_INICIAL para criar o primeiro administrador.');
+    }
+    const contaInicial = validarConta({ usuario, senha });
+    if (contaInicial.erro) throw new Error(`Credenciais iniciais inválidas. ${contaInicial.erro}`);
+    const { sal, hash } = criarHash(contaInicial.senha);
+    if (usoPostgres) {
+      await banco.prepare('INSERT INTO administradores (usuario, senha_hash) VALUES ($1, $2)').run(contaInicial.usuario, `${sal}:${hash}`);
+    } else {
+      banco.prepare('INSERT INTO administradores (usuario, senha_hash) VALUES (?, ?)').run(contaInicial.usuario, `${sal}:${hash}`);
+    }
+    console.log(`Administrador inicial criado: ${contaInicial.usuario}`);
+  }
 }
 
 // O sal aleatório impede hashes iguais para senhas iguais; a senha original não é salva.
@@ -52,25 +182,11 @@ const criarHash = (senha, sal = criptografia.randomBytes(16).toString('hex')) =>
   hash: criptografia.scryptSync(senha, sal, 64).toString('hex')
 });
 
-// Na primeira execução, cria a conta inicial usando valores fornecidos fora do código.
-if (banco.prepare('SELECT COUNT(*) AS quantidade FROM administradores').get().quantidade === 0) {
-  const usuario = process.env.ADMINISTRADOR_INICIAL;
-  const senha = process.env.SENHA_INICIAL;
-  if (!usuario || !senha) {
-    throw new Error('Defina ADMINISTRADOR_INICIAL e SENHA_INICIAL para criar o primeiro administrador.');
-  }
-  const contaInicial = validarConta({ usuario, senha });
-  if (contaInicial.erro) throw new Error(`Credenciais iniciais inválidas. ${contaInicial.erro}`);
-  const { sal, hash } = criarHash(contaInicial.senha);
-  banco.prepare('INSERT INTO administradores (usuario, senha_hash) VALUES (?, ?)').run(contaInicial.usuario, `${sal}:${hash}`);
-  console.log(`Administrador inicial criado: ${contaInicial.usuario}`);
-}
-
 // Converte JSON das requisições em objetos e publica os arquivos da pasta public.
 aplicativo.use(express.json({ limit: '20kb' }));
 aplicativo.use(express.static(caminho.join(__dirname, 'public')));
 
-function exigirAdministrador(requisicao, resposta, proximo) {
+async function exigirAdministrador(requisicao, resposta, proximo) {
   // O navegador envia o cookie; o token identifica uma sessão que expira em oito horas.
   const cookie = requisicao.headers.cookie || '';
   const token = cookie.match(/(?:^|;\s*)sessao=([^;]+)/)?.[1];
@@ -79,8 +195,9 @@ function exigirAdministrador(requisicao, resposta, proximo) {
     if (token) sessoes.delete(token);
     return resposta.status(401).json({ erro: 'Entre com sua conta de administrador.' });
   }
-  // Confere também no banco se a conta ainda existe (por exemplo, se foi removida).
-  const administrador = banco.prepare('SELECT id, usuario FROM administradores WHERE id = ?').get(sessao.administradorId);
+  const administrador = usoPostgres
+    ? await banco.prepare('SELECT id, usuario FROM administradores WHERE id = $1').get(sessao.administradorId)
+    : banco.prepare('SELECT id, usuario FROM administradores WHERE id = ?').get(sessao.administradorId);
   if (!administrador) {
     sessoes.delete(token);
     return resposta.status(401).json({ erro: 'Sua sessão terminou. Entre novamente.' });
@@ -118,22 +235,25 @@ function salvarDoador(requisicao, resposta, proximo) {
 }
 
 function tratarErro(error, requisicao, resposta, proximo) {
-  // E-mail e usuário são únicos no SQLite; erros inesperados recebem uma resposta genérica.
-  if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return resposta.status(409).json({ erro: 'Este e-mail ou usuário já está cadastrado.' });
+  const codigoErro = error?.code ?? '';
+  if (codigoErro === 'SQLITE_CONSTRAINT_UNIQUE' || codigoErro === '23505') return resposta.status(409).json({ erro: 'Este e-mail ou usuário já está cadastrado.' });
   console.error(error);
   if (resposta.headersSent) return proximo(error);
   return resposta.status(500).json({ erro: 'Ocorreu um erro inesperado. Tente novamente.' });
 }
 
-// POST recebe as credenciais, verifica o hash e cria um cookie de sessão protegido.
-aplicativo.post('/api/entrar', (requisicao, resposta) => {
+aplicativo.post('/api/entrar', async (requisicao, resposta) => {
   const { usuario, senha } = validarConta(requisicao.body);
   if (!usuario || !senha) return resposta.status(400).json({ erro: 'Informe usuário e senha.' });
-  const administrador = banco.prepare('SELECT * FROM administradores WHERE usuario = ? COLLATE NOCASE').get(usuario);
+  const consulta = usoPostgres
+    ? 'SELECT * FROM administradores WHERE LOWER(usuario) = LOWER($1)'
+    : 'SELECT * FROM administradores WHERE usuario = ? COLLATE NOCASE';
+  const administrador = usoPostgres
+    ? await banco.prepare(consulta).get(usuario)
+    : banco.prepare(consulta).get(usuario);
   if (!administrador) return resposta.status(401).json({ erro: 'Usuário ou senha incorretos.' });
   const [sal, hashSalvo] = administrador.senha_hash.split(':');
   const hashInformado = criarHash(senha, sal).hash;
-  // Compara os hashes em tempo constante para reduzir vazamento de informação temporal.
   if (!criptografia.timingSafeEqual(Buffer.from(hashSalvo, 'hex'), Buffer.from(hashInformado, 'hex'))) {
     return resposta.status(401).json({ erro: 'Usuário ou senha incorretos.' });
   }
@@ -143,7 +263,6 @@ aplicativo.post('/api/entrar', (requisicao, resposta) => {
   return resposta.json({ usuario: administrador.usuario });
 });
 
-// Sair apaga o token do servidor e manda o navegador apagar o cookie.
 aplicativo.post('/api/sair', (requisicao, resposta) => {
   const token = (requisicao.headers.cookie || '').match(/(?:^|;\s*)sessao=([^;]+)/)?.[1];
   if (token) sessoes.delete(token);
@@ -151,92 +270,147 @@ aplicativo.post('/api/sair', (requisicao, resposta) => {
   return resposta.status(204).end();
 });
 
-aplicativo.get('/api/sessao', exigirAdministrador, (requisicao, resposta) => resposta.json(requisicao.administrador));
+aplicativo.get('/api/sessao', exigirAdministrador, async (requisicao, resposta) => {
+  const administrador = usoPostgres
+    ? await banco.prepare('SELECT id, usuario FROM administradores WHERE id = $1').get(requisicao.administrador.id)
+    : banco.prepare('SELECT id, usuario FROM administradores WHERE id = ?').get(requisicao.administrador.id);
+  return resposta.json(administrador);
+});
 
-// A inscrição é pública: valida os dados e usa parâmetros SQL para gravar com segurança.
-aplicativo.post('/api/doadores', salvarDoador, (requisicao, resposta) => {
+aplicativo.post('/api/doadores', salvarDoador, async (requisicao, resposta) => {
   try {
-    const inserir = banco.prepare(`INSERT INTO doadores (nome, email, telefone, cidade, tamanho, observacao)
-      VALUES (@nome, @email, @telefone, @cidade, @tamanho, @observacao)`);
-    const id = inserir.run(requisicao.doador).lastInsertRowid;
-    return resposta.status(201).json(banco.prepare('SELECT * FROM doadores WHERE id = ?').get(id));
+    const inserir = banco.prepare(usoPostgres
+      ? `INSERT INTO doadores (nome, email, telefone, cidade, tamanho, observacao)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+      : `INSERT INTO doadores (nome, email, telefone, cidade, tamanho, observacao)
+        VALUES (@nome, @email, @telefone, @cidade, @tamanho, @observacao)`);
+    const resultado = usoPostgres
+      ? await inserir.run(requisicao.doador.nome, requisicao.doador.email, requisicao.doador.telefone, requisicao.doador.cidade, requisicao.doador.tamanho, requisicao.doador.observacao)
+      : inserir.run(requisicao.doador);
+    const id = usoPostgres ? resultado.lastInsertRowid : resultado.lastInsertRowid;
+    const doador = usoPostgres
+      ? await banco.prepare('SELECT * FROM doadores WHERE id = $1').get(id)
+      : banco.prepare('SELECT * FROM doadores WHERE id = ?').get(id);
+    return resposta.status(201).json(doador);
   } catch (erro) { return tratarErro(erro, requisicao, resposta, () => {}); }
 });
 
-// A listagem é privada; a mesma rota filtra por nome, e-mail ou cidade quando há busca.
-aplicativo.get('/api/doadores', exigirAdministrador, (requisicao, resposta) => {
+aplicativo.get('/api/doadores', exigirAdministrador, async (requisicao, resposta) => {
   const busca = String(requisicao.query.busca || '').trim();
-  const doadores = banco.prepare(`SELECT * FROM doadores
-    WHERE nome LIKE @busca OR email LIKE @busca OR cidade LIKE @busca
-    ORDER BY criado_em DESC, id DESC`).all({ busca: `%${busca}%` });
+  const consulta = usoPostgres
+    ? `SELECT * FROM doadores
+      WHERE LOWER(nome) LIKE LOWER($1) OR LOWER(email) LIKE LOWER($1) OR LOWER(cidade) LIKE LOWER($1)
+      ORDER BY criado_em DESC, id DESC`
+    : `SELECT * FROM doadores
+      WHERE nome LIKE @busca OR email LIKE @busca OR cidade LIKE @busca
+      ORDER BY criado_em DESC, id DESC`;
+  const doadores = usoPostgres
+    ? await banco.prepare(consulta).all(`%${busca}%`)
+    : banco.prepare(consulta).all({ busca: `%${busca}%` });
   resposta.json(doadores);
 });
 
-// PUT substitui os dados de um doador existente; primeiro exige login, depois valida.
-aplicativo.put('/api/doadores/:id', exigirAdministrador, salvarDoador, (requisicao, resposta) => {
+aplicativo.put('/api/doadores/:id', exigirAdministrador, salvarDoador, async (requisicao, resposta) => {
   try {
-    const resultado = banco.prepare(`UPDATE doadores SET nome=@nome, email=@email, telefone=@telefone,
-      cidade=@cidade, tamanho=@tamanho, observacao=@observacao, atualizado_em=CURRENT_TIMESTAMP WHERE id=@id`)
-      .run({ ...requisicao.doador, id: Number(requisicao.params.id) });
+    const consulta = usoPostgres
+      ? `UPDATE doadores SET nome=$1, email=$2, telefone=$3, cidade=$4, tamanho=$5, observacao=$6, atualizado_em=NOW() WHERE id=$7`
+      : `UPDATE doadores SET nome=@nome, email=@email, telefone=@telefone, cidade=@cidade, tamanho=@tamanho, observacao=@observacao, atualizado_em=CURRENT_TIMESTAMP WHERE id=@id`;
+    const resultado = usoPostgres
+      ? await banco.prepare(consulta).run(
+          requisicao.doador.nome,
+          requisicao.doador.email,
+          requisicao.doador.telefone,
+          requisicao.doador.cidade,
+          requisicao.doador.tamanho,
+          requisicao.doador.observacao,
+          Number(requisicao.params.id)
+        )
+      : banco.prepare(consulta).run({ ...requisicao.doador, id: Number(requisicao.params.id) });
     if (!resultado.changes) return resposta.status(404).json({ erro: 'Doador não encontrado.' });
-    return resposta.json(banco.prepare('SELECT * FROM doadores WHERE id = ?').get(Number(requisicao.params.id)));
+    const doador = usoPostgres
+      ? await banco.prepare('SELECT * FROM doadores WHERE id = $1').get(Number(requisicao.params.id))
+      : banco.prepare('SELECT * FROM doadores WHERE id = ?').get(Number(requisicao.params.id));
+    return resposta.json(doador);
   } catch (erro) { return tratarErro(erro, requisicao, resposta, () => {}); }
 });
 
-// DELETE remove o cadastro e informa 404 quando o identificador não existe.
-aplicativo.delete('/api/doadores/:id', exigirAdministrador, (requisicao, resposta) => {
-  const resultado = banco.prepare('DELETE FROM doadores WHERE id = ?').run(Number(requisicao.params.id));
+aplicativo.delete('/api/doadores/:id', exigirAdministrador, async (requisicao, resposta) => {
+  const resultado = usoPostgres
+    ? await banco.prepare('DELETE FROM doadores WHERE id = $1').run(Number(requisicao.params.id))
+    : banco.prepare('DELETE FROM doadores WHERE id = ?').run(Number(requisicao.params.id));
   if (!resultado.changes) return resposta.status(404).json({ erro: 'Doador não encontrado.' });
   return resposta.status(204).end();
 });
 
-// As três rotas seguintes permitem que um administrador gerencie outras contas.
-aplicativo.get('/api/administradores', exigirAdministrador, (requisicao, resposta) => {
-  resposta.json(banco.prepare('SELECT id, usuario, criado_em FROM administradores ORDER BY usuario').all());
+aplicativo.get('/api/administradores', exigirAdministrador, async (requisicao, resposta) => {
+  const administradores = usoPostgres
+    ? await banco.prepare('SELECT id, usuario, criado_em FROM administradores ORDER BY usuario').all()
+    : banco.prepare('SELECT id, usuario, criado_em FROM administradores ORDER BY usuario').all();
+  resposta.json(administradores);
 });
 
-aplicativo.post('/api/administradores', exigirAdministrador, (requisicao, resposta) => {
+aplicativo.post('/api/administradores', exigirAdministrador, async (requisicao, resposta) => {
   const conta = validarConta(requisicao.body);
   if (conta.erro) return resposta.status(400).json({ erro: conta.erro });
   const { sal, hash } = criarHash(conta.senha);
   try {
-    const resultado = banco.prepare('INSERT INTO administradores (usuario, senha_hash) VALUES (?, ?)').run(conta.usuario, `${sal}:${hash}`);
+    const resultado = usoPostgres
+      ? await banco.prepare('INSERT INTO administradores (usuario, senha_hash) VALUES ($1, $2)').run(conta.usuario, `${sal}:${hash}`)
+      : banco.prepare('INSERT INTO administradores (usuario, senha_hash) VALUES (?, ?)').run(conta.usuario, `${sal}:${hash}`);
     return resposta.status(201).json({ id: resultado.lastInsertRowid, usuario: conta.usuario });
   } catch (erro) { return tratarErro(erro, requisicao, resposta, () => {}); }
 });
 
-aplicativo.put('/api/administradores/:id', exigirAdministrador, (requisicao, resposta) => {
+aplicativo.put('/api/administradores/:id', exigirAdministrador, async (requisicao, resposta) => {
   const conta = validarConta(requisicao.body, false);
   if (conta.erro) return resposta.status(400).json({ erro: conta.erro });
   const id = Number(requisicao.params.id);
   try {
     if (conta.senha) {
       const { sal, hash } = criarHash(conta.senha);
-      banco.prepare('UPDATE administradores SET usuario = ?, senha_hash = ? WHERE id = ?').run(conta.usuario, `${sal}:${hash}`, id);
+      if (usoPostgres) {
+        await banco.prepare('UPDATE administradores SET usuario = $1, senha_hash = $2 WHERE id = $3').run(conta.usuario, `${sal}:${hash}`, id);
+      } else {
+        banco.prepare('UPDATE administradores SET usuario = ?, senha_hash = ? WHERE id = ?').run(conta.usuario, `${sal}:${hash}`, id);
+      }
+    } else if (usoPostgres) {
+      await banco.prepare('UPDATE administradores SET usuario = $1 WHERE id = $2').run(conta.usuario, id);
     } else {
       banco.prepare('UPDATE administradores SET usuario = ? WHERE id = ?').run(conta.usuario, id);
     }
-    const administrador = banco.prepare('SELECT id, usuario FROM administradores WHERE id = ?').get(id);
+    const administrador = usoPostgres
+      ? await banco.prepare('SELECT id, usuario FROM administradores WHERE id = $1').get(id)
+      : banco.prepare('SELECT id, usuario FROM administradores WHERE id = ?').get(id);
     if (!administrador) return resposta.status(404).json({ erro: 'Administrador não encontrado.' });
     return resposta.json(administrador);
   } catch (erro) { return tratarErro(erro, requisicao, resposta, () => {}); }
 });
 
-aplicativo.delete('/api/administradores/:id', exigirAdministrador, (requisicao, resposta) => {
+aplicativo.delete('/api/administradores/:id', exigirAdministrador, async (requisicao, resposta) => {
   const id = Number(requisicao.params.id);
-  // Evita que alguém remova a própria conta ou deixe o sistema sem administrador.
   if (id === requisicao.administrador.id) return resposta.status(400).json({ erro: 'Entre com outra conta para remover este administrador.' });
-  const quantidade = banco.prepare('SELECT COUNT(*) AS quantidade FROM administradores').get().quantidade;
+  const quantidade = usoPostgres
+    ? (await banco.prepare('SELECT COUNT(*) AS quantidade FROM administradores').get()).quantidade
+    : banco.prepare('SELECT COUNT(*) AS quantidade FROM administradores').get().quantidade;
   if (quantidade <= 1) return resposta.status(400).json({ erro: 'O último administrador não pode ser removido.' });
-  const resultado = banco.prepare('DELETE FROM administradores WHERE id = ?').run(id);
+  const resultado = usoPostgres
+    ? await banco.prepare('DELETE FROM administradores WHERE id = $1').run(id)
+    : banco.prepare('DELETE FROM administradores WHERE id = ?').run(id);
   if (!resultado.changes) return resposta.status(404).json({ erro: 'Administrador não encontrado.' });
   return resposta.status(204).end();
 });
 
-// Este middleware recebe erros que não foram tratados diretamente por uma rota.
 aplicativo.use(tratarErro);
 
-// 0.0.0.0 aceita conexões de fora do container Docker, além do próprio computador.
-aplicativo.listen(porta, '0.0.0.0', () => {
-  console.log(`Campanha do Agasalho disponível em http://localhost:${porta}`);
+inicializarBanco().catch((erro) => {
+  console.error('Erro ao inicializar o banco:', erro);
+  if (require.main === module) process.exit(1);
 });
+
+if (require.main === module) {
+  aplicativo.listen(porta, '0.0.0.0', () => {
+    console.log(`Campanha do Agasalho disponível em http://localhost:${porta}`);
+  });
+}
+
+module.exports = aplicativo;
