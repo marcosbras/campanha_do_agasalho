@@ -112,6 +112,24 @@ docker compose down --volumes
 
 O arquivo `.env` configura a conta inicial tanto no Docker Compose quanto na execução local. No modo local, as variáveis já definidas no ambiente do PowerShell têm prioridade sobre os valores do arquivo.
 
+## Deploy na Vercel
+
+O projeto exporta o aplicativo Express em `server.js`, um dos entrypoints reconhecidos pela Vercel. A plataforma executa o backend como uma Vercel Function e publica os arquivos de `public/` como assets estáticos. O `express.static()` continua atendendo os arquivos na execução local.
+
+1. Envie o repositório para o GitHub e importe-o na Vercel, usando a pasta raiz do projeto.
+2. Selecione Node.js 22. Não configure comando de build nem diretório de saída: este projeto não possui etapa de compilação.
+3. Crie ou conecte um PostgreSQL hospedado e configure estas variáveis em **Settings → Environment Variables**:
+
+   - `DATABASE_URL`: URL de conexão do PostgreSQL.
+   - `ADMINISTRADOR_INICIAL`: usuário da conta inicial.
+   - `SENHA_INICIAL`: senha forte com pelo menos 8 caracteres.
+
+4. Marque as variáveis para os ambientes desejados e faça o deploy. A aplicação cria as tabelas e o primeiro administrador quando o banco ainda não contém administradores. Alterar essas variáveis depois não troca a conta existente.
+5. Teste a página, os assets, o cadastro, o login, as operações administrativas e o logout na URL de preview antes de associar o domínio.
+6. Para usar domínio próprio, abra **Settings → Domains** no projeto e configure no provedor de DNS os registros indicados pela Vercel.
+
+Não publique o arquivo `.env` nem coloque credenciais no repositório. No deploy, use as variáveis configuradas na Vercel. A persistência do banco e das sessões usa o PostgreSQL; o SQLite serve para desenvolvimento local.
+
 ## API
 
 Inscrição pública:
