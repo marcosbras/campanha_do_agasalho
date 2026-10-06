@@ -8,7 +8,7 @@ A organização é simples e adequada a um projeto didático:
 - **Separação por responsabilidade:** `public/` contém a apresentação no navegador; `server.js` concentra as rotas HTTP, validações, autenticação e acesso a dados. É uma separação prática entre frontend, API e persistência, mas não uma arquitetura em camadas estrita: a lógica de domínio e as consultas SQL também ficam no servidor.
 - **Middleware do Express:** funções como `express.json()`, `express.static()`, `exigirAdministrador`, `salvarDoador` e `tratarErro` formam uma cadeia reutilizável para processar requisições, validar acesso e tratar erros.
 - **Padrão Adapter na persistência:** `criarBancoSqlite()` e `criarBancoPostgres()` oferecem uma interface comum (`prepare`, `get`, `all`, `run` e `exec`) para os dois bancos. Assim, as rotas podem usar os drivers SQLite ou PostgreSQL conforme a configuração. A adaptação é parcial: algumas consultas ainda escolhem SQL e parâmetros específicos de cada banco.
-- **Frontend sem framework:** `index.html`, `styles.css` e `app.js` compõem uma interface renderizada no navegador com JavaScript nativo. O `app.js` chama a API REST usando `fetch`; Bootstrap e Bootstrap Icons são carregados por CDN.
+- **Frontend sem framework:** `index.html`, `styles.css` e `app.js` compõem uma interface renderizada no navegador com JavaScript nativo. O Express entrega esses arquivos ao cliente, e o navegador executa o `app.js`, que chama a API REST usando `fetch`; Bootstrap e Bootstrap Icons são carregados por CDN. Por ser enviado ao cliente, o conteúdo de `app.js` pode ser inspecionado: não coloque nele segredos nem regras de segurança que precisem ser protegidas; essas validações devem ser feitas no servidor.
 
 Não é uma implementação formal de MVC, nem usa uma camada Repository/Service dedicada: rotas, regras de negócio e SQL estão reunidos principalmente em `server.js`.
 
@@ -43,7 +43,7 @@ Navegador (app.js) ── HTTP/JSON /api/* ──> Express ──> SQLite ou Pos
 | --- | --- | --- |
 | `public/index.html` | Frontend | Estrutura da página e formulários |
 | `public/styles.css` | Frontend | Aparência e layout |
-| `public/app.js` | Frontend | Eventos da interface e requisições à API |
+| `public/app.js` | Frontend enviado ao cliente | Eventos da interface e requisições à API |
 | `server.js` | Backend | Servidor Express, arquivos estáticos, API, validações, autenticação e SQL |
 | `package.json` e `package-lock.json` | Compartilhado / configuração | Dependências e comandos do projeto Node.js |
 | `Dockerfile` e `compose.yaml` | Infraestrutura | Empacotamento, execução do servidor e persistência em volume |
