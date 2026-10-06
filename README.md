@@ -1,3 +1,59 @@
+
+## Arquitetura e padrões de projeto
+
+Este projeto é um **monólito web**: a interface estática e a API fazem parte do mesmo projeto e, localmente, são servidas pela aplicação Express. Os termos **frontend** e **backend** descrevem papéis exercidos por diferentes arquivos dentro do monólito; não são aplicações independentes nem serviços implantados separadamente. No deploy Vercel, a plataforma pode servir os arquivos estáticos separadamente da função que executa a API, mas o código continua sendo mantido como um único projeto.
+
+A organização é simples e adequada a um projeto didático:
+
+- **Separação por responsabilidade:** `public/` contém a apresentação no navegador; `server.js` concentra as rotas HTTP, validações, autenticação e acesso a dados. É uma separação prática entre frontend, API e persistência, mas não uma arquitetura em camadas estrita: a lógica de domínio e as consultas SQL também ficam no servidor.
+- **Middleware do Express:** funções como `express.json()`, `express.static()`, `exigirAdministrador`, `salvarDoador` e `tratarErro` formam uma cadeia reutilizável para processar requisições, validar acesso e tratar erros.
+- **Padrão Adapter na persistência:** `criarBancoSqlite()` e `criarBancoPostgres()` oferecem uma interface comum (`prepare`, `get`, `all`, `run` e `exec`) para os dois bancos. Assim, as rotas podem usar os drivers SQLite ou PostgreSQL conforme a configuração. A adaptação é parcial: algumas consultas ainda escolhem SQL e parâmetros específicos de cada banco.
+- **Frontend sem framework:** `index.html`, `styles.css` e `app.js` compõem uma interface renderizada no navegador com JavaScript nativo. O `app.js` chama a API REST usando `fetch`; Bootstrap e Bootstrap Icons são carregados por CDN.
+
+Não é uma implementação formal de MVC, nem usa uma camada Repository/Service dedicada: rotas, regras de negócio e SQL estão reunidos principalmente em `server.js`.
+
+### Desenho da estrutura
+
+```text
+campanha_do_agasalho/
+├── public/                         # Papel de frontend: arquivos estáticos
+│   ├── index.html                  # Página, formulários e estrutura visual
+│   ├── app.js                      # Interações e chamadas à API REST
+│   └── styles.css                  # Estilos da interface
+├── server.js                       # Papel de backend: Express, API e autenticação
+│   └── (middlewares, rotas /api/* e acesso a dados ficam neste arquivo)
+├── package.json                    # Dependências e comandos Node.js
+├── package-lock.json               # Versões travadas das dependências
+├── Dockerfile                      # Imagem do servidor
+├── compose.yaml                    # Serviço e volume persistente do Docker
+├── .env.example                    # Exemplo de configuração local
+├── .env                            # Configuração local (não versionada)
+├── data/                           # Banco SQLite local (gerado, não versionado)
+└── update_apostila.py              # Utilitário auxiliar; não participa do servidor
+
+Fluxo principal:
+
+Express (server.js) ── entrega public/* ──> Navegador
+Navegador (app.js) ── HTTP/JSON /api/* ──> Express ──> SQLite ou PostgreSQL
+```
+
+### Arquivos por função
+
+| Arquivo ou pasta | Papel no monólito | Responsabilidade |
+| --- | --- | --- |
+| `public/index.html` | Frontend | Estrutura da página e formulários |
+| `public/styles.css` | Frontend | Aparência e layout |
+| `public/app.js` | Frontend | Eventos da interface e requisições à API |
+| `server.js` | Backend | Servidor Express, arquivos estáticos, API, validações, autenticação e SQL |
+| `package.json` e `package-lock.json` | Compartilhado / configuração | Dependências e comandos do projeto Node.js |
+| `Dockerfile` e `compose.yaml` | Infraestrutura | Empacotamento, execução do servidor e persistência em volume |
+| `.env.example` | Configuração | Modelo das variáveis de ambiente |
+| `update_apostila.py` | Auxiliar | Script independente, fora do fluxo de execução da aplicação |
+| `data/` | Dados locais | Arquivo SQLite criado em tempo de execução; a pasta é ignorada pelo Git |
+
+Este projeto é para fins didáticos. Para publicar na internet, use HTTPS e guarde credenciais nos segredos do serviço de hospedagem.
+
+
 # Conados git básicos
 
 
@@ -148,56 +204,3 @@ Rotas que exigem login de administrador:
 
 Autenticação: `POST /api/entrar`, `POST /api/sair` e `GET /api/sessao`.
 
-## Arquitetura e padrões de projeto
-
-Este projeto é um **monólito web**: a interface estática e a API fazem parte do mesmo repositório e são servidas pela aplicação Express. Não há um frontend e um backend implantados como serviços independentes. No deploy Vercel, a plataforma pode servir os arquivos estáticos separadamente da função que executa a API, mas o código e a aplicação continuam sendo mantidos como um único projeto.
-
-A organização é simples e adequada a um projeto didático:
-
-- **Separação por responsabilidade:** `public/` contém a apresentação no navegador; `server.js` concentra as rotas HTTP, validações, autenticação e acesso a dados. É uma separação prática entre frontend, API e persistência, mas não uma arquitetura em camadas estrita: a lógica de domínio e as consultas SQL também ficam no servidor.
-- **Middleware do Express:** funções como `express.json()`, `express.static()`, `exigirAdministrador`, `salvarDoador` e `tratarErro` formam uma cadeia reutilizável para processar requisições, validar acesso e tratar erros.
-- **Padrão Adapter na persistência:** `criarBancoSqlite()` e `criarBancoPostgres()` oferecem uma interface comum (`prepare`, `get`, `all`, `run` e `exec`) para os dois bancos. Assim, as rotas podem usar os drivers SQLite ou PostgreSQL conforme a configuração. A adaptação é parcial: algumas consultas ainda escolhem SQL e parâmetros específicos de cada banco.
-- **Frontend sem framework:** `index.html`, `styles.css` e `app.js` compõem uma interface renderizada no navegador com JavaScript nativo. O `app.js` chama a API REST usando `fetch`; Bootstrap e Bootstrap Icons são carregados por CDN.
-
-Não é uma implementação formal de MVC, nem usa uma camada Repository/Service dedicada: rotas, regras de negócio e SQL estão reunidos principalmente em `server.js`.
-
-### Desenho da estrutura
-
-```text
-campanha_do_agasalho/
-├── public/                         # FRONTEND (arquivos estáticos)
-│   ├── index.html                  # Página, formulários e estrutura visual
-│   ├── app.js                      # Interações e chamadas à API REST
-│   └── styles.css                  # Estilos da interface
-├── server.js                       # BACKEND (Express, API e autenticação)
-│   └── (middlewares, rotas /api/* e acesso a dados ficam neste arquivo)
-├── package.json                    # Dependências e comandos Node.js
-├── package-lock.json               # Versões travadas das dependências
-├── Dockerfile                      # Imagem do servidor
-├── compose.yaml                    # Serviço e volume persistente do Docker
-├── .env.example                    # Exemplo de configuração local
-├── .env                            # Configuração local (não versionada)
-├── data/                           # Banco SQLite local (gerado, não versionado)
-└── update_apostila.py              # Utilitário auxiliar; não participa do servidor
-
-Fluxo principal:
-
-Express (server.js) ── entrega public/* ──> Navegador
-Navegador (app.js) ── HTTP/JSON /api/* ──> Express ──> SQLite ou PostgreSQL
-```
-
-### Arquivos por função
-
-| Arquivo ou pasta | Área | Responsabilidade |
-| --- | --- | --- |
-| `public/index.html` | Frontend | Estrutura da página e formulários |
-| `public/styles.css` | Frontend | Aparência e layout |
-| `public/app.js` | Frontend | Eventos da interface e requisições à API |
-| `server.js` | Backend | Servidor Express, arquivos estáticos, API, validações, autenticação e SQL |
-| `package.json` e `package-lock.json` | Compartilhado / configuração | Dependências e comandos do projeto Node.js |
-| `Dockerfile` e `compose.yaml` | Infraestrutura | Empacotamento, execução do servidor e persistência em volume |
-| `.env.example` | Configuração | Modelo das variáveis de ambiente |
-| `update_apostila.py` | Auxiliar | Script independente, fora do fluxo de execução da aplicação |
-| `data/` | Dados locais | Arquivo SQLite criado em tempo de execução; a pasta é ignorada pelo Git |
-
-Este projeto é para fins didáticos. Para publicar na internet, use HTTPS e guarde credenciais nos segredos do serviço de hospedagem.
